@@ -49,6 +49,13 @@ else
 	verbose=""
 fi
 
+# Disable follow mode
+if [[ "$PX4_NO_FOLLOW_MODE" != "1" ]]; then
+    follow_mode="--gui-client-plugin libgazebo_user_camera_plugin.so"
+else
+    follow_mode=""
+fi
+
 if [ "$program" == "jmavsim" ]; then
 	jmavsim_pid=`ps aux | grep java | grep "\-jar jmavsim_run.jar" | awk '{ print $2 }'`
 	if [ -n "$jmavsim_pid" ]; then
@@ -83,6 +90,8 @@ shift 7
 for file in "$@"; do
 	cp "$file" $rootfs/
 done
+
+export PX4_SIM_MODEL=${model}
 
 SIM_PID=0
 
@@ -128,16 +137,27 @@ elif [ "$program" == "gazebo" ] && [ ! -n "$no_sim" ]; then
 		SIM_PID=$!
 
 		# Check all paths in ${GAZEBO_MODEL_PATH} for specified model
-		readarray -d : -t paths <<< ${GAZEBO_MODEL_PATH}
-		for possibleModelPath in "${paths[@]}"; do
+		IFS_bak=$IFS
+		IFS=":"
+		for possible_model_path in ${GAZEBO_MODEL_PATH}; do
+			if [ -z $possible_model_path ]; then
+				continue
+			fi
 			# trim \r from path
-			possibleModelPath = $(echo $possibleModelPath | tr -d '\r')
-			if test -f "${possibleModelPath}/${model}/${model}.sdf" ; then
-				modelpath=$possibleModelPath
+			possible_model_path=$(echo $possible_model_path | tr -d '\r')
+			if test -f "${possible_model_path}/${model}/${model}.sdf" ; then
+				modelpath=$possible_model_path
 				break
 			fi
 		done
-		echo "Using: ${modelpath}/${model}/${model}.sdf"
+		IFS=$IFS_bak
+
+		if [ -z $modelpath ]; then
+			echo "Model ${model} not found in model path: ${GAZEBO_MODEL_PATH}"
+			exit 1
+		else
+			echo "Using: ${modelpath}/${model}/${model}.sdf"
+		fi
 
 		while gz model --verbose --spawn-file="${modelpath}/${model}/${model_name}.sdf" --model-name=${model} -x 1.01 -y 0.98 -z 0.83 2>&1 | grep -q "An instance of Gazebo is not running."; do
 			echo "gzserver not ready yet, trying again!"
@@ -150,7 +170,7 @@ elif [ "$program" == "gazebo" ] && [ ! -n "$no_sim" ]; then
 			# gzserver needs to be running to avoid a race. Since the launch
 			# is putting it into the background we need to avoid it by backing off
 			sleep 3
-			nice -n 20 gzclient --verbose &
+			nice -n 20 gzclient --verbose $follow_mode &
 			GUI_PID=$!
 		fi
 	else
@@ -192,9 +212,6 @@ else
 fi
 
 echo SITL COMMAND: $sitl_command
-
-export PX4_SIM_MODEL=${model}
-
 
 if [ "$debugger" == "lldb" ]; then
 	eval lldb -- $sitl_command
